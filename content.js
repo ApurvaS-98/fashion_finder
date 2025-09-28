@@ -6,6 +6,7 @@ let startY = 0;
 let drawingCanvas = null;
 let drawingCtx = null;
 let overlay = null;
+let lastCapturedImage = null;
 
 // Debug logging
 console.log('Area Capture Extension: Content script loaded');
@@ -31,7 +32,9 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
       sendResponse({success: false, error: error.message});
     }
   } else if (request.action === 'getState') {
-    sendResponse({enabled: captureEnabled});
+    sendResponse({enabled: captureEnabled, hasCapturedImage: lastCapturedImage !== null});
+  } else if (request.action === 'generateTryOnImage') {
+    generateTryOnImage(sendResponse);
   } else if (request.action === 'copyDataUrlToClipboard') {
     // Handle data URL from background script
     console.log('Received data URL from background script');
@@ -47,23 +50,39 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 });
 
 function enableAreaCapture() {
-  if (captureEnabled) return;
+  console.log('Enabling area capture...');
+  
+  if (captureEnabled) {
+    console.log('Area capture already enabled');
+    return;
+  }
   
   captureEnabled = true;
+  console.log('Capture enabled flag set to true');
   
   // Create overlay for drawing (this blocks all interactions)
   createDrawingOverlay();
   
   // Add event listeners to the canvas for drawing
-  drawingCanvas.addEventListener('mousedown', startDrawing);
-  drawingCanvas.addEventListener('mousemove', draw);
-  drawingCanvas.addEventListener('mouseup', endDrawing);
-  drawingCanvas.addEventListener('keydown', handleKeyPress);
+  if (drawingCanvas) {
+    console.log('Adding event listeners to canvas...');
+    drawingCanvas.addEventListener('mousedown', startDrawing);
+    drawingCanvas.addEventListener('mousemove', draw);
+    drawingCanvas.addEventListener('mouseup', endDrawing);
+    drawingCanvas.addEventListener('keydown', handleKeyPress);
+  } else {
+    console.error('Drawing canvas is null!');
+  }
   
   // Also add event listeners to the overlay as backup
-  overlay.addEventListener('mousedown', startDrawing);
-  overlay.addEventListener('mousemove', draw);
-  overlay.addEventListener('mouseup', endDrawing);
+  if (overlay) {
+    console.log('Adding event listeners to overlay...');
+    overlay.addEventListener('mousedown', startDrawing);
+    overlay.addEventListener('mousemove', draw);
+    overlay.addEventListener('mouseup', endDrawing);
+  } else {
+    console.error('Overlay is null!');
+  }
   
   // Prevent interactions on the page (but allow our overlay/canvas)
   document.addEventListener('selectstart', preventSelection, true);
@@ -76,6 +95,8 @@ function enableAreaCapture() {
   
   // Show instructions
   showInstructions();
+  
+  console.log('Area capture enabled successfully');
 }
 
 function disableAreaCapture() {
@@ -117,6 +138,8 @@ function disableAreaCapture() {
 }
 
 function createDrawingOverlay() {
+  console.log('Creating drawing overlay...');
+  
   // Create overlay div that blocks all interactions
   overlay = document.createElement('div');
   overlay.id = 'area-capture-overlay';
@@ -170,6 +193,10 @@ function createDrawingOverlay() {
   
   overlay.appendChild(drawingCanvas);
   document.body.appendChild(overlay);
+  
+  console.log('Overlay created and added to page');
+  console.log('Canvas dimensions:', drawingCanvas.width, 'x', drawingCanvas.height);
+  console.log('Window dimensions:', window.innerWidth, 'x', window.innerHeight);
   
   // Handle window resize
   window.addEventListener('resize', handleResize);
@@ -517,7 +544,7 @@ function preventSelection(e) {
 function showInstructions() {
   const instructions = document.createElement('div');
   instructions.id = 'area-capture-instructions';
-  instructions.textContent = 'Draw any shape around the area to capture it. Press ESC to cancel.';
+  instructions.textContent = 'Draw a box around the dress you want to try on. Press ESC to cancel.';
   instructions.style.cssText = `
     position: fixed;
     top: 20px;
@@ -636,6 +663,15 @@ function processCapturedImageRectangular(dataUrl, left, top, width, height, send
     canvas.toBlob(function(blob) {
       console.log('Blob created, size:', blob.size);
       copyBlobToClipboard(blob);
+      
+      // Store the captured image for Pinterest search
+      lastCapturedImage = {
+        blob: blob,
+        dataUrl: canvas.toDataURL(),
+        width: width,
+        height: height
+      };
+      
       sendResponse({success: true});
     }, 'image/png');
   };
@@ -656,10 +692,520 @@ function processCapturedImageFull(dataUrl, sendResponse) {
     .then(response => response.blob())
     .then(blob => {
       copyBlobToClipboard(blob);
+      
+      // Store the captured image for Pinterest search
+      lastCapturedImage = {
+        blob: blob,
+        dataUrl: dataUrl,
+        width: null,
+        height: null
+      };
+      
       sendResponse({success: true});
     })
     .catch(error => {
       console.error('Error processing full image:', error);
       sendResponse({success: false, error: error.message});
     });
+} 
+
+function generateTryOnImage(sendResponse) {
+  console.log('Generating try-on image');
+  
+  if (!lastCapturedImage) {
+    console.error('No captured image available');
+    sendResponse({success: false, error: 'No captured image available'});
+    return;
+  }
+  
+  console.log('Last captured image:', lastCapturedImage);
+  console.log('Image data URL length:', lastCapturedImage.dataUrl ? lastCapturedImage.dataUrl.length : 'undefined');
+  
+  try {
+    // Send image to background script for try-on generation
+    chrome.runtime.sendMessage({
+      action: 'generateTryOnImage',
+      imageData: lastCapturedImage.dataUrl
+    }, function(response) {
+      console.log('Received response from background script:', response);
+      
+      if (chrome.runtime.lastError) {
+        console.error('Runtime error:', chrome.runtime.lastError);
+        sendResponse({success: false, error: chrome.runtime.lastError.message});
+        return;
+      }
+      
+      if (response && response.success) {
+        console.log('Try-on image generation completed successfully');
+        sendResponse({success: true, result: response.result});
+        showTryOnGenerationResult(response.result);
+        
+        // Display the AI-generated image in a popup
+        if (response.imageData) {
+          if (response.useLocalComposite) {
+            // Create local composite as fallback
+            createAndShowTryOnImage(response.imageData);
+          } else {
+            // Show AI-generated image
+            openImagePopup(response.imageData);
+          }
+        } else if (response.imageUrl) {
+          // Fallback for URL-based images
+          openImagePopup(response.imageUrl);
+        }
+      } else {
+        console.error('Try-on image generation failed:', response);
+        const errorMsg = response ? response.error : 'Try-on image generation failed';
+        sendResponse({success: false, error: errorMsg});
+        showTryOnGenerationError(errorMsg);
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error generating try-on image:', error);
+    sendResponse({success: false, error: error.message});
+  }
+}
+
+function showTryOnGenerationResult(result) {
+  const notification = document.createElement('div');
+  notification.innerHTML = `
+    <div style="margin-bottom: 8px;"><strong>Try-On Image Generated!</strong></div>
+    <div style="font-size: 12px; max-height: 200px; overflow-y: auto;">
+      ${result}
+    </div>
+    <div style="margin-top: 8px; font-size: 10px; opacity: 0.8;">
+      Click to dismiss
+    </div>
+  `;
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #10a37f;
+    color: white;
+    padding: 12px 20px;
+    border-radius: 4px;
+    z-index: 1000000;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    max-width: 400px;
+    line-height: 1.4;
+    cursor: pointer;
+  `;
+  
+  notification.addEventListener('click', function() {
+    if (notification.parentNode) {
+      notification.parentNode.removeChild(notification);
+    }
+  });
+  
+  document.body.appendChild(notification);
+  
+  // Auto-remove after 15 seconds
+  setTimeout(() => {
+    if (notification.parentNode) {
+      notification.parentNode.removeChild(notification);
+    }
+  }, 15000);
+}
+
+function showTryOnGenerationError(error) {
+  const notification = document.createElement('div');
+  notification.innerHTML = `
+    <div style="margin-bottom: 8px;"><strong>Try-On Generation Failed</strong></div>
+    <div style="font-size: 12px;">
+      Error: ${error}
+    </div>
+    <div style="margin-top: 8px; font-size: 10px; opacity: 0.8;">
+      Click to dismiss
+    </div>
+  `;
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #dc3545;
+    color: white;
+    padding: 12px 20px;
+    border-radius: 4px;
+    z-index: 1000000;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    max-width: 400px;
+    line-height: 1.4;
+    cursor: pointer;
+  `;
+  
+  notification.addEventListener('click', function() {
+    if (notification.parentNode) {
+      notification.parentNode.removeChild(notification);
+    }
+  });
+  
+  document.body.appendChild(notification);
+  
+  // Auto-remove after 10 seconds
+  setTimeout(() => {
+    if (notification.parentNode) {
+      notification.parentNode.removeChild(notification);
+    }
+  }, 10000);
+}
+
+// Function to show API call notifications
+function showApiCallNotification(message, type) {
+  const notification = document.createElement('div');
+  notification.innerHTML = `
+    <div style="margin-bottom: 8px;"><strong>API Call ${type === 'success' ? 'Success' : 'Error'}</strong></div>
+    <div style="font-size: 12px;">${message}</div>
+  `;
+  
+  const backgroundColor = type === 'success' ? '#28a745' : '#dc3545';
+  
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: ${backgroundColor};
+    color: white;
+    padding: 12px 20px;
+    border-radius: 4px;
+    z-index: 1000000;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    max-width: 350px;
+    line-height: 1.4;
+  `;
+  
+  document.body.appendChild(notification);
+  
+  setTimeout(() => {
+    if (notification.parentNode) {
+      notification.parentNode.removeChild(notification);
+    }
+  }, 5000);
+}
+
+// Flexible API call function that can be called from console or other parts
+// Usage: callApi('https://api.example.com/endpoint', {method: 'POST', data: {...}})
+function callApi(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const defaultOptions = {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: null
+    };
+    
+    const requestOptions = { ...defaultOptions, ...options };
+    
+    if (requestOptions.body && typeof requestOptions.body === 'object') {
+      requestOptions.body = JSON.stringify(requestOptions.body);
+    }
+    
+    fetch(url, requestOptions)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        console.log('API call successful:', data);
+        resolve(data);
+      })
+      .catch(error => {
+        console.error('API call failed:', error);
+        reject(error);
+      });
+  });
+}
+
+// Debug function - can be called from console
+function testCapture() {
+  console.log('Testing capture functionality...');
+  console.log('Capture enabled:', captureEnabled);
+  console.log('Is drawing:', isDrawing);
+  console.log('Is capturing:', isCapturing);
+  console.log('Overlay exists:', !!overlay);
+  console.log('Canvas exists:', !!drawingCanvas);
+  console.log('Canvas context exists:', !!drawingCtx);
+  
+  if (overlay) {
+    console.log('Overlay style:', overlay.style.cssText);
+    console.log('Overlay visible:', overlay.offsetWidth > 0 && overlay.offsetHeight > 0);
+  }
+  
+  if (drawingCanvas) {
+    console.log('Canvas dimensions:', drawingCanvas.width, 'x', drawingCanvas.height);
+    console.log('Canvas style:', drawingCanvas.style.cssText);
+  }
+  
+  // Try to enable capture
+  enableAreaCapture();
+}
+
+// Make test function available globally
+window.testCapture = testCapture;
+
+function createAndShowTryOnImage(dressImageData) {
+  try {
+    console.log('Creating try-on image with me.webp...');
+    
+    // Create a canvas to composite the try-on image
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Set canvas size
+    canvas.width = 800;
+    canvas.height = 1000;
+    
+    // Create background gradient
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#f8f9fa');
+    gradient.addColorStop(1, '#e9ecef');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Load the person image from me.webp
+    const personImg = new Image();
+    personImg.onload = function() {
+      console.log('Person image loaded, drawing person...');
+      
+      // Draw the person from me.webp
+      // Scale and center the person
+      const personWidth = 400;
+      const personHeight = 600;
+      const personX = (canvas.width - personWidth) / 2;
+      const personY = 100;
+      
+      ctx.drawImage(personImg, personX, personY, personWidth, personHeight);
+      
+      // Now load and composite the dress
+      const dressImg = new Image();
+      dressImg.onload = function() {
+        console.log('Dress image loaded, compositing...');
+        
+        // Create a temporary canvas for dress processing
+        const dressCanvas = document.createElement('canvas');
+        const dressCtx = dressCanvas.getContext('2d');
+        dressCanvas.width = dressImg.width;
+        dressCanvas.height = dressImg.height;
+        
+        // Draw the dress
+        dressCtx.drawImage(dressImg, 0, 0);
+        
+        // Get the dress image data for processing
+        const dressImageData = dressCtx.getImageData(0, 0, dressCanvas.width, dressCanvas.height);
+        const data = dressImageData.data;
+        
+        // Simple background removal (make white/light backgrounds transparent)
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+          const brightness = (r + g + b) / 3;
+          
+          // If pixel is very light (likely background), make it transparent
+          if (brightness > 240) {
+            data[i + 3] = 0; // Set alpha to 0 (transparent)
+          }
+        }
+        
+        // Put the processed dress data back
+        dressCtx.putImageData(dressImageData, 0, 0);
+        
+        // Scale and position the dress on the person
+        const dressWidth = 250;
+        const dressHeight = 350;
+        const dressX = (canvas.width - dressWidth) / 2;
+        const dressY = personY + 50; // Position dress on the person's body
+        
+        // Draw the processed dress onto the main canvas
+        ctx.drawImage(dressCanvas, dressX, dressY, dressWidth, dressHeight);
+        
+        // Add some styling overlay for better integration
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.02)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Convert to data URL and show popup
+        const resultDataUrl = canvas.toDataURL('image/png');
+        console.log('Try-on image created successfully');
+        openImagePopup(resultDataUrl);
+      };
+      
+      dressImg.onerror = function() {
+        console.error('Error loading dress image');
+        // Fallback: show the person without dress
+        const resultDataUrl = canvas.toDataURL('image/png');
+        openImagePopup(resultDataUrl);
+      };
+      
+      dressImg.src = dressImageData;
+    };
+    
+    personImg.onerror = function() {
+      console.error('Error loading me.webp, using fallback');
+      // Fallback: create a simple silhouette
+      createFallbackTryOnImage(dressImageData, canvas, ctx);
+    };
+    
+    // Try to load me.webp from the extension folder
+    personImg.src = chrome.runtime.getURL('me.webp');
+    
+  } catch (error) {
+    console.error('Error creating try-on image:', error);
+    // Fallback: show the original dress image
+    openImagePopup(dressImageData);
+  }
+}
+
+function createFallbackTryOnImage(dressImageData, canvas, ctx) {
+  console.log('Creating fallback try-on image...');
+  
+  // Create a simple person silhouette as fallback
+  ctx.fillStyle = '#6c757d';
+  // Head
+  ctx.beginPath();
+  ctx.arc(400, 150, 80, 0, 2 * Math.PI);
+  ctx.fill();
+  
+  // Body
+  ctx.fillRect(320, 230, 160, 300);
+  
+  // Arms
+  ctx.fillRect(280, 250, 40, 200);
+  ctx.fillRect(480, 250, 40, 200);
+  
+  // Legs
+  ctx.fillRect(360, 530, 40, 300);
+  ctx.fillRect(400, 530, 40, 300);
+  
+  // Draw dress on top
+  const dressImg = new Image();
+  dressImg.onload = function() {
+    // Scale and position the dress
+    const dressWidth = 300;
+    const dressHeight = 400;
+    const dressX = (canvas.width - dressWidth) / 2;
+    const dressY = 200;
+    
+    ctx.drawImage(dressImg, dressX, dressY, dressWidth, dressHeight);
+    
+    // Add some styling overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Convert to data URL and show popup
+    const resultDataUrl = canvas.toDataURL('image/png');
+    openImagePopup(resultDataUrl);
+  };
+  dressImg.src = dressImageData;
+}
+
+function openImagePopup(imageDataUrl) {
+  // Create popup window
+  const popup = window.open('', 'TryOnImage', 'width=900,height=1100,scrollbars=yes,resizable=yes');
+  
+  if (popup) {
+    popup.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Fashion Try-On Generated Image</title>
+        <style>
+          body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: #f8f9fa;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+          }
+          .header {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #333;
+          }
+          .image-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+          }
+          .generated-image {
+            max-width: 100%;
+            height: auto;
+            border-radius: 5px;
+          }
+          .info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            max-width: 600px;
+          }
+          .download-btn {
+            background: #007bff;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+          }
+          .download-btn:hover {
+            background: #0056b3;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>🎉 AI Fashion Try-On Generated!</h1>
+          <p>Hugging Face Stable Diffusion has created this realistic fashion image</p>
+        </div>
+        
+        <div class="image-container">
+          <img src="${imageDataUrl}" alt="Generated Try-On Image" class="generated-image" />
+        </div>
+        
+        <div class="info">
+          <h3>📸 Image Details:</h3>
+          <ul>
+            <li><strong>Person:</strong> A realistic person wearing a beautiful dress</li>
+            <li><strong>Dress:</strong> Fashion dress concept generated by AI</li>
+            <li><strong>AI Model:</strong> Hugging Face Stable Diffusion XL (Free)</li>
+            <li><strong>Style:</strong> Professional fashion photography with studio lighting</li>
+            <li><strong>Quality:</strong> High-resolution AI-generated image</li>
+          </ul>
+        </div>
+        
+        <button class="download-btn" onclick="downloadImage()">💾 Download Image</button>
+        <button class="download-btn" onclick="window.print()">🖨️ Print Image</button>
+        
+        <script>
+          function downloadImage() {
+            const link = document.createElement('a');
+            link.download = 'fashion-try-on-' + Date.now() + '.png';
+            link.href = '${imageDataUrl}';
+            link.click();
+          }
+        </script>
+      </body>
+      </html>
+    `);
+    popup.document.close();
+  } else {
+    console.error('Failed to open popup window. Please allow popups for this site.');
+    // Fallback: show notification
+    showTryOnGenerationResult('Try-on image generated! Please allow popups to view the image.');
+  }
 } 

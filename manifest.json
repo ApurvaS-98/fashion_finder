@@ -1,14 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "Area Capture Tool",
+  "name": "Image Capture & ChatGPT Assistant",
   "version": "1.0",
-  "description": "Draw a circle around any area to capture it as an image.",
+  "description": "Capture areas of webpages as images and integrate with ChatGPT for analysis.",
   "permissions": [
     "activeTab",
     "clipboardWrite",
     "tabs",
     "scripting",
     "clipboardRead"
+  ],
+  "host_permissions": [
+    "https://api-inference.huggingface.co/*"
   ],
   "action": {
     "default_popup": "popup.html"
@@ -21,6 +24,12 @@
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["me.webp"],
+      "matches": ["<all_urls>"]
     }
   ]
 } 

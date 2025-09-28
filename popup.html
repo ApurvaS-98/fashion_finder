@@ -5,8 +5,8 @@
   <title>Area Capture Tool</title>
   <style>
     body {
-      min-width: 280px;
-      min-height: 180px;
+      min-width: 300px;
+      min-height: 220px;
       font-family: Arial, sans-serif;
       background: #f9f9f9;
       padding: 20px;
@@ -61,21 +61,50 @@
     .toggle-btn.active:hover {
       background: #c82333;
     }
+    .generate-btn {
+      background: #10a37f;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.3s;
+      margin: 5px;
+    }
+    .generate-btn:hover {
+      background: #0d8a6f;
+    }
+    .generate-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
     .instructions {
       font-size: 11px;
       color: #666;
       margin-top: 10px;
       line-height: 1.4;
     }
+    .button-group {
+      margin: 10px 0;
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <h2>Area Capture Tool</h2>
-    <button id="toggleBtn" class="toggle-btn">Start Area Capture</button>
+    <h2>Fashion Try-On Generator</h2>
+    <div class="button-group">
+      <button id="toggleBtn" class="toggle-btn">Start Dress Capture</button>
+    </div>
+    <div class="button-group">
+      <button id="generateBtn" class="generate-btn" disabled>Generate Try-On Image</button>
+    </div>
     <div id="status" class="status" style="display: none;"></div>
     <div class="instructions">
-      Click "Start Area Capture" then draw a rectangular box around the area you want to capture. Click and drag to create the selection box.
+      <strong>How to use:</strong><br>
+      1. Click "Start Dress Capture"<br>
+      2. Draw a box around the dress you want to try on<br>
+      3. Click "Generate Try-On Image" to create an image where the person from me.webp wears the captured dress
     </div>
   </div>
   <script src="popup.js"></script>
